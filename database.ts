@@ -1,4 +1,3 @@
-import { createDatabase, createLocalDatabase, FilesystemBridge } from '@tinacms/datalayer';
 import { Gitlab } from '@gitbeaker/rest';
 import path from 'path';
 
@@ -19,7 +18,7 @@ class GitLabProvider {
     private branch: string;
 
     constructor() {
-        this.projectId = process.env.GITLAB_PROJECT_ID || process.env.GITLAB_PROJECT_PATH || '';
+        this.projectId = process.env.GITLAB_PROJECT_PATH || '';
         this.branch = 'dev'; // Hardcoded to dev as requested
 
         if (!isLocal) {
@@ -43,7 +42,7 @@ class GitLabProvider {
 
             const action = fileExists ? 'update' : 'create';
 
-            await this.api.orgmits.create(
+            await this.api.Commits.create(
                 this.projectId,
                 currentBranch,
                 `TinaCMS: ${action} ${key}`,
@@ -65,7 +64,7 @@ class GitLabProvider {
         if (isLocal || process.env.TINA_DISABLE_GIT === 'true') return;
         const currentBranch = branchContext.getStore() || this.branch;
         try {
-            await this.api.orgmits.create(
+            await this.api.Commits.create(
                 this.projectId,
                 currentBranch,
                 `TinaCMS: delete ${key}`,
@@ -96,9 +95,9 @@ if (!isLocal) {
             del: async () => { },
             batch: async () => { },
             clear: async () => { },
-            iterator: () => ({ next: async () => [], end: async () => { } }),
-            keys: () => ({ next: async () => [], end: async () => { } }),
-            values: () => ({ next: async () => [], end: async () => { } }),
+            iterator: () => ({ next: async () => undefined, end: async () => { } }),
+            keys: () => ({ next: async () => undefined, end: async () => { } }),
+            values: () => ({ next: async () => undefined, end: async () => { } }),
             sublevel: () => databaseAdapter,
         } as any;
     } else {
@@ -119,9 +118,9 @@ if (!isLocal) {
                     del: async () => { },
                     batch: async () => { },
                     clear: async () => { },
-                    iterator: () => ({ next: async () => [], end: async () => { } }),
-                    keys: () => ({ next: async () => [], end: async () => { } }),
-                    values: () => ({ next: async () => [], end: async () => { } }),
+                    iterator: () => ({ next: async () => undefined, end: async () => { } }),
+                    keys: () => ({ next: async () => undefined, end: async () => { } }),
+                    values: () => ({ next: async () => undefined, end: async () => { } }),
                     sublevel: () => databaseAdapter,
                 } as any;
             }
@@ -129,13 +128,16 @@ if (!isLocal) {
     }
 }
 
-export default isLocal
-    ? createLocalDatabase({ tinaDirectory: 'tina' })
-    : createDatabase({
-        tinaDirectory: 'tina',
-        gitProvider: new GitLabProvider(),
-        databaseAdapter: databaseAdapter,
-        namespace: 'dev',
-        // We add the FilesystemBridge so it can read local templates
-        bridge: new FilesystemBridge(process.cwd()),
-    });
+export default async function initDatabase() {
+    const dl = await import('@tinacms/datalayer');
+    return isLocal
+        ? dl.createLocalDatabase({ tinaDirectory: 'tina' })
+        : dl.createDatabase({
+            tinaDirectory: 'tina',
+            gitProvider: new GitLabProvider() as any,
+            databaseAdapter: databaseAdapter,
+            namespace: 'dev',
+            // We add the FilesystemBridge so it can read local templates
+            bridge: new dl.FilesystemBridge(process.cwd()),
+        });
+}

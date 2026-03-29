@@ -1,4 +1,27 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -40,7 +63,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.branchContext = void 0;
-var datalayer_1 = require("@tinacms/datalayer");
+exports.default = initDatabase;
 var rest_1 = require("@gitbeaker/rest");
 var path_1 = __importDefault(require("path"));
 var isLocal = process.env.TINA_PUBLIC_IS_LOCAL === 'true';
@@ -55,7 +78,7 @@ catch (e) {
 exports.branchContext = branchContextLocal;
 var GitLabProvider = /** @class */ (function () {
     function GitLabProvider() {
-        this.projectId = process.env.GITLAB_PROJECT_ID || process.env.GITLAB_PROJECT_PATH || '';
+        this.projectId = '';
         this.branch = 'dev'; // Hardcoded to dev as requested
         if (!isLocal) {
             this.api = new rest_1.Gitlab({
@@ -90,7 +113,7 @@ var GitLabProvider = /** @class */ (function () {
                         return [3 /*break*/, 5];
                     case 5:
                         action = fileExists ? 'update' : 'create';
-                        return [4 /*yield*/, this.api.orgmits.create(this.projectId, currentBranch, "TinaCMS: ".concat(action, " ").concat(key), [
+                        return [4 /*yield*/, this.api.Commits.create(this.projectId, currentBranch, "TinaCMS: ".concat(action, " ").concat(key), [
                                 {
                                     action: action,
                                     filePath: key,
@@ -121,7 +144,7 @@ var GitLabProvider = /** @class */ (function () {
                         _a.label = 1;
                     case 1:
                         _a.trys.push([1, 3, , 4]);
-                        return [4 /*yield*/, this.api.orgmits.create(this.projectId, currentBranch, "TinaCMS: delete ".concat(key), [
+                        return [4 /*yield*/, this.api.Commits.create(this.projectId, currentBranch, "TinaCMS: delete ".concat(key), [
                                 {
                                     action: 'delete',
                                     filePath: key,
@@ -165,17 +188,17 @@ if (!isLocal) {
                 return [2 /*return*/];
             }); }); },
             iterator: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/, []];
+                    return [2 /*return*/, undefined];
                 }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
                     return [2 /*return*/];
                 }); }); } }); },
             keys: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/, []];
+                    return [2 /*return*/, undefined];
                 }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
                     return [2 /*return*/];
                 }); }); } }); },
             values: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/, []];
+                    return [2 /*return*/, undefined];
                 }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
                     return [2 /*return*/];
                 }); }); } }); },
@@ -213,17 +236,17 @@ if (!isLocal) {
                         return [2 /*return*/];
                     }); }); },
                     iterator: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/, []];
+                            return [2 /*return*/, undefined];
                         }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
                             return [2 /*return*/];
                         }); }); } }); },
                     keys: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/, []];
+                            return [2 /*return*/, undefined];
                         }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
                             return [2 /*return*/];
                         }); }); } }); },
                     values: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/, []];
+                            return [2 /*return*/, undefined];
                         }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
                             return [2 /*return*/];
                         }); }); } }); },
@@ -233,13 +256,25 @@ if (!isLocal) {
         }
     }
 }
-exports.default = isLocal
-    ? (0, datalayer_1.createLocalDatabase)({ tinaDirectory: 'tina' })
-    : (0, datalayer_1.createDatabase)({
-        tinaDirectory: 'tina',
-        gitProvider: new GitLabProvider(),
-        databaseAdapter: databaseAdapter,
-        namespace: 'dev',
-        // We add the FilesystemBridge so it can read local templates
-        bridge: new datalayer_1.FilesystemBridge(process.cwd()),
+function initDatabase() {
+    return __awaiter(this, void 0, void 0, function () {
+        var dl;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, Promise.resolve().then(function () { return __importStar(require('@tinacms/datalayer')); })];
+                case 1:
+                    dl = _a.sent();
+                    return [2 /*return*/, isLocal
+                            ? dl.createLocalDatabase({ tinaDirectory: 'tina' })
+                            : dl.createDatabase({
+                                tinaDirectory: 'tina',
+                                gitProvider: new GitLabProvider(),
+                                databaseAdapter: databaseAdapter,
+                                namespace: 'dev',
+                                // We add the FilesystemBridge so it can read local templates
+                                bridge: new dl.FilesystemBridge(process.cwd()),
+                            })];
+            }
+        });
     });
+}
