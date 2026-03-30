@@ -28,9 +28,9 @@ const cors = require('cors');
 
 // Import TinaCMS modules compiled or executed dynamically
 const tinaDatabase = require('./tina/database');
+const database = tinaDatabase.default;
 const branchContext = tinaDatabase.branchContext;
-let database;
-let datalayerResolve;
+const { resolve } = require('@tinacms/datalayer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -95,9 +95,9 @@ app.get('/login', async (req, res) => {
     let branchesDropdown = '<option value="dev">dev</option>';
     if (process.env.TINA_PUBLIC_IS_LOCAL !== 'true') {
         try {
-            const api = new Gitlab({ 
-                host: process.env.GITLAB_HOST || 'https://gitlab.org',
-                token: process.env.GITLAB_PERSONAL_ACCESS_TOKEN || '' 
+            const api = new Gitlab({
+                host: process.env.GITLAB_HOST || 'https://gitlab.com',
+                token: process.env.GITLAB_PERSONAL_ACCESS_TOKEN || ''
             });
             const projectId = process.env.GITLAB_PROJECT_ID || process.env.GITLAB_PROJECT_PATH || '';
             const branches = await api.Branches.all(projectId);
@@ -141,9 +141,9 @@ app.post('/login', async (req, res, next) => {
 
     if (req.body.newBranch && process.env.TINA_PUBLIC_IS_LOCAL !== 'true') {
         try {
-            const api = new Gitlab({ 
-                host: process.env.GITLAB_HOST || 'https://gitlab.org',
-                token: process.env.GITLAB_PERSONAL_ACCESS_TOKEN || '' 
+            const api = new Gitlab({
+                host: process.env.GITLAB_HOST || 'https://gitlab.com',
+                token: process.env.GITLAB_PERSONAL_ACCESS_TOKEN || ''
             });
             const projectId = process.env.GITLAB_PROJECT_ID || process.env.GITLAB_PROJECT_PATH || '';
             try {
@@ -184,26 +184,61 @@ app.use('/api/tina', (req, res, next) => {
 
 // --- TinaCMS Endpoint Setup ---
 const handler = async (req, res) => {
-    const body = req.body || {};
-    const { query, variables } = body;
+    // Tina's SDK sometimes hits:
+    // - /api/tina/graphql
+    // - /api/tina/graphql/<branch>
+    // (see generated `tina/__generated__/types.ts`)
+
+    let query;
+    let variables;
+
+    if (req.method === 'GET') {
+        query = req.query.query;
+        if (typeof req.query.variables === 'string') {
+            try {
+                variables = JSON.parse(req.query.variables);
+            } catch {
+                variables = undefined;
+            }
+        }
+    } else {
+        const body = req.body || {};
+        ({ query, variables } = body);
+    }
 
     if (!query) {
-        console.error('GraphQL Error: No query provided in request body');
         return res.status(400).json({ error: 'No GraphQL query provided' });
     }
 
+    const branchFromParams =
+        typeof req.params.branch === 'string' && req.params.branch.trim()
+            ? req.params.branch.trim()
+            : undefined;
+
+    const branchFromVars =
+        variables && typeof variables.branch === 'string' && variables.branch.trim()
+            ? variables.branch.trim()
+            : undefined;
+
+    const activeBranch =
+        branchFromParams ||
+        branchFromVars ||
+        req.session?.branch ||
+        process.env.GITLAB_BRANCH ||
+        'main';
+
     try {
-        const activeBranch = req.session.branch || 'dev';
-        const result = await branchContext.run(activeBranch, () => datalayerResolve({
-            config: {
-                useRelativeMedia: true,
-            },
-            database,
-            query,
-            variables,
-            verbose: true,
-            ctxUser: req.user,
-        }));
+        const result = await branchContext.run(activeBranch, () =>
+            resolve({
+                config: { useRelativeMedia: true },
+                database,
+                query,
+                variables,
+                // Avoid verbose logs during admin usage (can be large and memory-heavy)
+                verbose: false,
+                ctxUser: req.user,
+            }),
+        );
         res.json(result);
     } catch (e) {
         console.error('GraphQL Error:', e.stack || e);
@@ -211,8 +246,13 @@ const handler = async (req, res) => {
     }
 };
 
-// Tina admin and Tina CLI use POST for GraphQL requests
+// Branch-aware route (used when Tina branch is selected)
+app.post('/api/tina/graphql/:branch', handler);
+app.get('/api/tina/graphql/:branch', handler);
+
+// Default route
 app.post('/api/tina/graphql', handler);
+app.get('/api/tina/graphql', handler);
 
 // --- Custom Media Handlers ---
 const multer = require('multer');
@@ -316,9 +356,6 @@ app.use((req, res) => {
 
 const startServer = async () => {
     try {
-        const dl = await import('@tinacms/datalayer');
-        datalayerResolve = dl.resolve;
-        database = await tinaDatabase.default();
         console.log("Indexing Tina data layer...");
         const fs = require('fs');
         const generatedFolder = path.join(process.cwd(), 'tina', '__generated__');
