@@ -242,7 +242,19 @@ const handler = async (req, res) => {
         res.json(result);
     } catch (e) {
         console.error('GraphQL Error:', e.stack || e);
-        res.status(500).json({ error: e.message, stack: e.stack });
+        // Tina's admin expects a GraphQL-shaped payload even on failures.
+        // Returning 200 prevents Tina's UI from treating it as a "failed to fetch".
+        res.status(200).json({
+            data: null,
+            errors: [
+                {
+                    message: e.message || 'Internal server error',
+                    extensions: {
+                        code: 'INTERNAL_SERVER_ERROR',
+                    },
+                },
+            ],
+        });
     }
 };
 
@@ -359,20 +371,27 @@ const startServer = async () => {
         console.log("Indexing Tina data layer...");
         const fs = require('fs');
         const generatedFolder = path.join(process.cwd(), 'tina', '__generated__');
+
         const graphQLSchema = JSON.parse(fs.readFileSync(path.join(generatedFolder, '_graphql.json'), 'utf8'));
         const tinaSchema = { schema: JSON.parse(fs.readFileSync(path.join(generatedFolder, '_schema.json'), 'utf8')) };
         const lookup = JSON.parse(fs.readFileSync(path.join(generatedFolder, '_lookup.json'), 'utf8'));
 
-        await database.indexContent({ graphQLSchema, tinaSchema, lookup });
-
-        console.log("Finished indexing.");
-
-        app.listen(PORT, () => {
-            console.log(`Server is running on port ${PORT}`);
-        });
+        if (typeof database.indexContent === 'function') {
+            await database.indexContent({ graphQLSchema, tinaSchema, lookup });
+            console.log("Finished indexing.");
+        } else {
+            // In some datalayer modes (notably local DB mode), `indexContent` isn't available.
+            // In that case, Tina should already be indexed via `tina-build` / filesystem reads.
+            console.log("Skipping indexing: database.indexContent is not available in this runtime mode.");
+        }
     } catch (e) {
-        console.error("Failed to start server", e);
+        // Don't block server startup on indexing issues in airgap scenarios.
+        console.error("Tina indexing failed (continuing anyway):", e.stack || e);
     }
+
+    app.listen(PORT, () => {
+        console.log(`Server is running on port ${PORT}`);
+    });
 };
 
 startServer();

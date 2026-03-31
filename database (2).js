@@ -1,27 +1,4 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -63,23 +40,16 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.branchContext = void 0;
-exports.default = initDatabase;
+var datalayer_1 = require("@tinacms/datalayer");
 var rest_1 = require("@gitbeaker/rest");
 var path_1 = __importDefault(require("path"));
+var async_hooks_1 = require("async_hooks");
 var isLocal = process.env.TINA_PUBLIC_IS_LOCAL === 'true';
-var branchContextLocal;
-try {
-    var AsyncLocalStorage = eval('require')('async_hooks').AsyncLocalStorage;
-    branchContextLocal = new AsyncLocalStorage();
-}
-catch (e) {
-    branchContextLocal = { getStore: function () { return undefined; }, run: function (store, cb) { return cb(); } };
-}
-exports.branchContext = branchContextLocal;
+exports.branchContext = new async_hooks_1.AsyncLocalStorage();
 var GitLabProvider = /** @class */ (function () {
     function GitLabProvider() {
-        this.projectId = '';
-        this.branch = 'dev'; // Hardcoded to dev as requested
+        this.projectId = process.env.GITLAB_PROJECT_PATH || '';
+        this.branch = process.env.GITLAB_BRANCH || 'main'; // Stop hardcoding 'dev' here!
         if (!isLocal) {
             this.api = new rest_1.Gitlab({
                 host: process.env.GITLAB_HOST || 'https://gitlab.org',
@@ -170,40 +140,9 @@ var databaseAdapter;
 var req = eval('require');
 if (!isLocal) {
     if (process.env.TINA_DISABLE_GIT === 'true') {
-        console.warn('Bypassing LevelDB during Tina Build to prevent Database Lock Errors. Using mockup.');
-        databaseAdapter = {
-            put: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                return [2 /*return*/];
-            }); }); },
-            get: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                return [2 /*return*/];
-            }); }); },
-            del: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                return [2 /*return*/];
-            }); }); },
-            batch: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                return [2 /*return*/];
-            }); }); },
-            clear: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                return [2 /*return*/];
-            }); }); },
-            iterator: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/, undefined];
-                }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/];
-                }); }); } }); },
-            keys: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/, undefined];
-                }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/];
-                }); }); } }); },
-            values: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/, undefined];
-                }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                    return [2 /*return*/];
-                }); }); } }); },
-            sublevel: function () { return databaseAdapter; },
-        };
+        console.warn('Bypassing LevelDB during Tina Build to prevent Database Lock Errors. Using MemoryLevel.');
+        var memLevelPath = path_1.default.join(process.cwd(), 'node_modules', 'memory-level');
+        databaseAdapter = new (req(memLevelPath).MemoryLevel)({ valueEncoding: 'json' });
     }
     else {
         var dbPath_1 = path_1.default.join(process.cwd(), '.tina-db');
@@ -218,63 +157,20 @@ if (!isLocal) {
                 databaseAdapter.open().catch(function (err) { return console.error('\n\n!!! FATAL LEVELDB OPEN ERROR !!!\nPath:', dbPath_1, '\nCause:', err, '\n\n'); });
             }
             catch (err) {
-                console.warn('level not found. Using a mockup for database adapter.');
-                databaseAdapter = {
-                    put: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                        return [2 /*return*/];
-                    }); }); },
-                    get: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                        return [2 /*return*/];
-                    }); }); },
-                    del: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                        return [2 /*return*/];
-                    }); }); },
-                    batch: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                        return [2 /*return*/];
-                    }); }); },
-                    clear: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                        return [2 /*return*/];
-                    }); }); },
-                    iterator: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/, undefined];
-                        }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/];
-                        }); }); } }); },
-                    keys: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/, undefined];
-                        }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/];
-                        }); }); } }); },
-                    values: function () { return ({ next: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/, undefined];
-                        }); }); }, end: function () { return __awaiter(void 0, void 0, void 0, function () { return __generator(this, function (_a) {
-                            return [2 /*return*/];
-                        }); }); } }); },
-                    sublevel: function () { return databaseAdapter; },
-                };
+                console.warn('level not found. Using MemoryLevel fallback.');
+                var memLevelPath = path_1.default.join(process.cwd(), 'node_modules', 'memory-level');
+                databaseAdapter = new (req(memLevelPath).MemoryLevel)({ valueEncoding: 'json' });
             }
         }
     }
 }
-function initDatabase() {
-    return __awaiter(this, void 0, void 0, function () {
-        var dl;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
-                case 0: return [4 /*yield*/, Promise.resolve().then(function () { return __importStar(require('@tinacms/datalayer')); })];
-                case 1:
-                    dl = _a.sent();
-                    return [2 /*return*/, isLocal
-                            ? dl.createLocalDatabase({ tinaDirectory: 'tina' })
-                            : dl.createDatabase({
-                                tinaDirectory: 'tina',
-                                gitProvider: new GitLabProvider(),
-                                databaseAdapter: databaseAdapter,
-                                namespace: 'dev',
-                                // We add the FilesystemBridge so it can read local templates
-                                bridge: new dl.FilesystemBridge(process.cwd()),
-                            })];
-            }
-        });
+exports.default = isLocal
+    ? (0, datalayer_1.createLocalDatabase)({ tinaDirectory: 'tina' })
+    : (0, datalayer_1.createDatabase)({
+        tinaDirectory: 'tina',
+        gitProvider: new GitLabProvider(),
+        databaseAdapter: databaseAdapter,
+        // Namespace should not vary by Git branch; branch selection is handled separately.
+        namespace: 'dev',
+        bridge: new datalayer_1.FilesystemBridge(process.cwd()),
     });
-}

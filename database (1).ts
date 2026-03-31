@@ -1,16 +1,11 @@
+import { createDatabase, createLocalDatabase, FilesystemBridge } from '@tinacms/datalayer';
 import { Gitlab } from '@gitbeaker/rest';
 import path from 'path';
+import { AsyncLocalStorage } from 'async_hooks';
 
 const isLocal = process.env.TINA_PUBLIC_IS_LOCAL === 'true';
 
-let branchContextLocal: any;
-try {
-    const { AsyncLocalStorage } = eval('require')('async_hooks');
-    branchContextLocal = new AsyncLocalStorage();
-} catch (e) {
-    branchContextLocal = { getStore: () => undefined, run: (store: any, cb: any) => cb() };
-}
-export const branchContext = branchContextLocal;
+export const branchContext = new AsyncLocalStorage<string>();
 
 class GitLabProvider {
     private api: any;
@@ -19,7 +14,7 @@ class GitLabProvider {
 
     constructor() {
         this.projectId = process.env.GITLAB_PROJECT_PATH || '';
-        this.branch = 'dev'; // Hardcoded to dev as requested
+        this.branch = process.env.GITLAB_BRANCH || 'main'; // Stop hardcoding 'dev' here!
 
         if (!isLocal) {
             this.api = new Gitlab({
@@ -88,18 +83,9 @@ let databaseAdapter: any;
 const req = eval('require');
 if (!isLocal) {
     if (process.env.TINA_DISABLE_GIT === 'true') {
-        console.warn('Bypassing LevelDB during Tina Build to prevent Database Lock Errors. Using mockup.');
-        databaseAdapter = {
-            put: async () => { },
-            get: async () => { },
-            del: async () => { },
-            batch: async () => { },
-            clear: async () => { },
-            iterator: () => ({ next: async () => undefined, end: async () => { } }),
-            keys: () => ({ next: async () => undefined, end: async () => { } }),
-            values: () => ({ next: async () => undefined, end: async () => { } }),
-            sublevel: () => databaseAdapter,
-        } as any;
+        console.warn('Bypassing LevelDB during Tina Build to prevent Database Lock Errors. Using MemoryLevel.');
+        const memLevelPath = path.join(process.cwd(), 'node_modules', 'memory-level');
+        databaseAdapter = new (req(memLevelPath).MemoryLevel)({ valueEncoding: 'json' });
     } else {
         const dbPath = path.join(process.cwd(), '.tina-db');
         try {
@@ -111,33 +97,21 @@ if (!isLocal) {
                 databaseAdapter = new (req(levelPath).Level)(dbPath, { valueEncoding: 'json' });
                 databaseAdapter.open().catch((err: any) => console.error('\n\n!!! FATAL LEVELDB OPEN ERROR !!!\nPath:', dbPath, '\nCause:', err, '\n\n'));
             } catch (err) {
-                console.warn('level not found. Using a mockup for database adapter.');
-                databaseAdapter = {
-                    put: async () => { },
-                    get: async () => { },
-                    del: async () => { },
-                    batch: async () => { },
-                    clear: async () => { },
-                    iterator: () => ({ next: async () => undefined, end: async () => { } }),
-                    keys: () => ({ next: async () => undefined, end: async () => { } }),
-                    values: () => ({ next: async () => undefined, end: async () => { } }),
-                    sublevel: () => databaseAdapter,
-                } as any;
+                console.warn('level not found. Using MemoryLevel fallback.');
+                const memLevelPath = path.join(process.cwd(), 'node_modules', 'memory-level');
+                databaseAdapter = new (req(memLevelPath).MemoryLevel)({ valueEncoding: 'json' });
             }
         }
     }
 }
 
-export default async function initDatabase() {
-    const dl = await import('@tinacms/datalayer');
-    return isLocal
-        ? dl.createLocalDatabase({ tinaDirectory: 'tina' })
-        : dl.createDatabase({
-            tinaDirectory: 'tina',
-            gitProvider: new GitLabProvider() as any,
-            databaseAdapter: databaseAdapter,
-            namespace: 'dev',
-            // We add the FilesystemBridge so it can read local templates
-            bridge: new dl.FilesystemBridge(process.cwd()),
-        });
-}
+export default isLocal
+    ? createLocalDatabase({ tinaDirectory: 'tina' })
+    : createDatabase({
+        tinaDirectory: 'tina',
+        gitProvider: new GitLabProvider() as any,
+        databaseAdapter: databaseAdapter,
+        // Namespace should not vary by Git branch; branch selection is handled separately.
+        namespace: 'dev',
+        bridge: new FilesystemBridge(process.cwd()),
+    });
