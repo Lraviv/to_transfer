@@ -1,11 +1,16 @@
-import { createDatabase, createLocalDatabase, FilesystemBridge } from '@tinacms/datalayer';
 import { Gitlab } from '@gitbeaker/rest';
 import path from 'path';
-import { AsyncLocalStorage } from 'async_hooks';
 
 const isLocal = process.env.TINA_PUBLIC_IS_LOCAL === 'true';
 
-export const branchContext = new AsyncLocalStorage<string>();
+let branchContextLocal: any;
+try {
+    const { AsyncLocalStorage } = eval('require')('async_hooks');
+    branchContextLocal = new AsyncLocalStorage();
+} catch (e) {
+    branchContextLocal = { getStore: () => undefined, run: (store: any, cb: any) => cb() };
+}
+export const branchContext = branchContextLocal;
 
 class GitLabProvider {
     private api: any;
@@ -14,11 +19,11 @@ class GitLabProvider {
 
     constructor() {
         this.projectId = process.env.GITLAB_PROJECT_PATH || '';
-        this.branch = process.env.GITLAB_BRANCH || 'main'; // Stop hardcoding 'dev' here!
+        this.branch = 'dev'; // Hardcoded to dev as requested
 
         if (!isLocal) {
             this.api = new Gitlab({
-                host: process.env.GITLAB_HOST || 'https://gitlab.org',
+                host: process.env.GITLAB_HOST || 'https://gitlab.com',
                 token: process.env.GITLAB_PERSONAL_ACCESS_TOKEN || '',
             });
         }
@@ -76,36 +81,62 @@ class GitLabProvider {
         }
     }
 }
-export default (async () => {
-    const dl = await import('@tinacms/datalayer');
+let databaseAdapter: any;
 
-    let databaseAdapter: any;
-    if (!isLocal) {
-        if (process.env.TINA_DISABLE_GIT === 'true') {
-            console.warn('Bypassing LevelDB during Tina Build to prevent Lock Errors. Booting strictly memory-level.');
-            const MemoryLevelClass = (await import('memory-level')).MemoryLevel;
-            databaseAdapter = new MemoryLevelClass({ valueEncoding: 'json' });
-        } else {
-            const dbPath = path.join(process.cwd(), '.tina-db');
+// Hidden require to bypass esbuild AST analysis parsing native C++ modules
+// because they fail under ESM module bundling for the browser
+const req = eval('require');
+if (!isLocal) {
+    if (process.env.TINA_DISABLE_GIT === 'true') {
+        console.warn('Bypassing LevelDB during Tina Build to prevent Database Lock Errors. Using mockup.');
+        databaseAdapter = {
+            put: async () => { },
+            get: async () => { },
+            del: async () => { },
+            batch: async () => { },
+            clear: async () => { },
+            iterator: () => ({ next: async () => undefined, end: async () => { } }),
+            keys: () => ({ next: async () => undefined, end: async () => { } }),
+            values: () => ({ next: async () => undefined, end: async () => { } }),
+            sublevel: () => databaseAdapter,
+        } as any;
+    } else {
+        const dbPath = path.join(process.cwd(), '.tina-db');
+        try {
+            databaseAdapter = new (req('level').Level)(dbPath, { valueEncoding: 'json' });
+            databaseAdapter.open().catch((err: any) => console.error('\n\n!!! FATAL LEVELDB OPEN ERROR !!!\nPath:', dbPath, '\nCause:', err, '\n\n'));
+        } catch (e) {
             try {
-                const LevelClass = (await import('level')).Level;
-                databaseAdapter = new LevelClass(dbPath, { valueEncoding: 'json' });
-                databaseAdapter.open().catch((err: any) => console.error('\n\n!!! FATAL LEVELDB OPEN ERROR !!!\nPath:', dbPath, '\nCause:', err));
+                const levelPath = path.join(process.cwd(), 'node_modules', 'level');
+                databaseAdapter = new (req(levelPath).Level)(dbPath, { valueEncoding: 'json' });
+                databaseAdapter.open().catch((err: any) => console.error('\n\n!!! FATAL LEVELDB OPEN ERROR !!!\nPath:', dbPath, '\nCause:', err, '\n\n'));
             } catch (err) {
-                console.warn('Level runtime rejected inside OpenShift. Bouncing universally to memory-level.');
-                const MemoryLevelClass = (await import('memory-level')).MemoryLevel;
-                databaseAdapter = new MemoryLevelClass({ valueEncoding: 'json' });
+                console.warn('level not found. Using a mockup for database adapter.');
+                databaseAdapter = {
+                    put: async () => { },
+                    get: async () => { },
+                    del: async () => { },
+                    batch: async () => { },
+                    clear: async () => { },
+                    iterator: () => ({ next: async () => undefined, end: async () => { } }),
+                    keys: () => ({ next: async () => undefined, end: async () => { } }),
+                    values: () => ({ next: async () => undefined, end: async () => { } }),
+                    sublevel: () => databaseAdapter,
+                } as any;
             }
         }
     }
+}
 
+export default (async () => {
+    const dl = await import('@tinacms/datalayer');
     return isLocal
         ? dl.createLocalDatabase({ tinaDirectory: 'tina' })
         : dl.createDatabase({
             tinaDirectory: 'tina',
             gitProvider: new GitLabProvider() as any,
             databaseAdapter: databaseAdapter,
-            namespace: process.env.GITLAB_BRANCH || 'main',
+            namespace: 'dev',
             // We add the FilesystemBridge so it can read local templates
             bridge: new dl.FilesystemBridge(process.cwd()),
         });

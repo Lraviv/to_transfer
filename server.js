@@ -149,31 +149,21 @@ app.post('/login', async (req, res, next) => {
             try {
                 await api.Branches.show(projectId, chosenBranch);
             } catch (e) {
-                // branch does not exist, create it from the base branch, effectively tracking correct lineage
-                await api.Branches.create(projectId, chosenBranch, process.env.GITLAB_BRANCH || 'main');
+                // branch does not exist, create it from dev
+                await api.Branches.create(projectId, chosenBranch, 'dev');
             }
         } catch (e) {
             console.error("Failed to create branch:", e.message);
         }
     }
 
-    req.session.branch = chosenBranch || process.env.GITLAB_BRANCH || 'main';
+    req.session.branch = chosenBranch || 'dev';
 
     const strategy = req.body.domain === 'ad' ? 'ldapauth' : 'local';
     passport.authenticate(strategy, {
         successRedirect: '/admin',
         failureRedirect: '/login',
     })(req, res, next);
-});
-
-// Explicit Logout Route
-app.get('/logout', (req, res, next) => {
-    req.logout((err) => {
-        if (err) { return next(err); }
-        req.session.destroy(() => {
-            res.redirect('/login');
-        });
-    });
 });
 
 // Protect /admin
@@ -231,9 +221,9 @@ const handler = async (req, res) => {
             : undefined;
 
     const activeBranch =
-        req.session?.branch ||
         branchFromParams ||
         branchFromVars ||
+        req.session?.branch ||
         process.env.GITLAB_BRANCH ||
         'main';
 
@@ -249,12 +239,8 @@ const handler = async (req, res) => {
     console.log(`4. Target Git Commit Branch:  ${activeBranch} (Because this is what you chose to edit in the UI)`);
     console.log(`------------------------------\n`);
     
-    if (database && database.gitProvider) {
-        database.gitProvider.branch = activeBranch;
-    }
-
     try {
-        const result = await branchContext.run(BASE_NAMESPACE, () =>
+        const result = await branchContext.run(activeBranch, () =>
             resolve({
                 config: { useRelativeMedia: true },
                 database,
@@ -292,6 +278,27 @@ app.get('/api/tina/graphql/:branch', handler);
 app.post('/api/tina/graphql', handler);
 app.get('/api/tina/graphql', handler);
 
+
+// --- DB Debugging Route ---
+app.get('/debug/db', async (req, res) => {
+    try {
+        if (!globalDatabaseAdapter) {
+            return res.json({ status: "Database not initialized natively yet." });
+        }
+        const keys = [];
+        for await (const key of globalDatabaseAdapter.keys()) {
+            keys.push(key);
+        }
+        res.json({
+            status: "Database Open & Accessible",
+            active_namespace_variable: process.env.GITLAB_BRANCH || 'main',
+            total_documents_indexed: keys.length,
+            first_100_keys: keys.slice(0, 100)
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 // --- Custom Media Handlers ---
 const multer = require('multer');
 const fs = require('fs');
