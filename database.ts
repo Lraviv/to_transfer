@@ -1,3 +1,5 @@
+import { createDatabase, createLocalDatabase, FilesystemBridge } from '@tinacms/datalayer';
+import { Gitlab } from '@gitbeaker/rest';
 import path from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
 
@@ -10,12 +12,12 @@ class GitLabProvider {
     private projectId: string;
     private branch: string;
 
-    constructor(gitlabModule: any) {
+    constructor() {
         this.projectId = process.env.GITLAB_PROJECT_PATH || '';
-        this.branch = process.env.GITLAB_BRANCH || 'main';
+        this.branch = process.env.GITLAB_BRANCH || 'main'; // Stop hardcoding 'dev' here!
 
         if (!isLocal) {
-            this.api = new gitlabModule.Gitlab({
+            this.api = new Gitlab({
                 host: process.env.GITLAB_HOST || 'https://gitlab.org',
                 token: process.env.GITLAB_PERSONAL_ACCESS_TOKEN || '',
             });
@@ -34,11 +36,18 @@ class GitLabProvider {
             }
 
             const action = fileExists ? 'update' : 'create';
+
             await this.api.Commits.create(
                 this.projectId,
                 currentBranch,
                 `TinaCMS: ${action} ${key}`,
-                [{ action, filePath: key, content: value }]
+                [
+                    {
+                        action: action,
+                        filePath: key,
+                        content: value,
+                    },
+                ]
             );
         } catch (error) {
             console.error('GitLab onPut Error:', error);
@@ -54,7 +63,12 @@ class GitLabProvider {
                 this.projectId,
                 currentBranch,
                 `TinaCMS: delete ${key}`,
-                [{ action: 'delete', filePath: key }]
+                [
+                    {
+                        action: 'delete',
+                        filePath: key,
+                    },
+                ]
             );
         } catch (error) {
             console.error('GitLab onDelete Error:', error);
@@ -62,51 +76,37 @@ class GitLabProvider {
         }
     }
 }
+export default (async () => {
+    const dl = await import('@tinacms/datalayer');
 
-// Export a Promise that resolves to the database instance.
-// Using dynamic import() for all ESM-only packages (@tinacms/datalayer,
-// @gitbeaker/rest, level, memory-level) so this file can be compiled to
-// CommonJS by tsc without triggering ERR_REQUIRE_ESM.
-const databasePromise: Promise<any> = (async () => {
-    const datalayer = await import('@tinacms/datalayer');
-    const { createDatabase, createLocalDatabase, FilesystemBridge } = datalayer;
-
-    if (isLocal) {
-        return createLocalDatabase({ tinaDirectory: 'tina' });
-    }
-
-    // ── LevelDB / MemoryLevel adapter ────────────────────────────────────────
     let databaseAdapter: any;
-
-    if (process.env.TINA_DISABLE_GIT === 'true') {
-        console.warn('Bypassing LevelDB (TINA_DISABLE_GIT=true). Using MemoryLevel.');
-        const { MemoryLevel } = await import('memory-level');
-        databaseAdapter = new MemoryLevel({ valueEncoding: 'json' });
-    } else {
-        const dbPath = path.join(process.cwd(), '.tina-db');
-        try {
-            const { Level } = await import('level');
-            databaseAdapter = new Level(dbPath, { valueEncoding: 'json' });
-            await databaseAdapter.open().catch((err: any) =>
-                console.error('\n\n!!! FATAL LEVELDB OPEN ERROR !!!\nPath:', dbPath, '\nCause:', err, '\n\n')
-            );
-        } catch (e) {
-            console.warn('level open failed. Using MemoryLevel fallback.');
-            const { MemoryLevel } = await import('memory-level');
-            databaseAdapter = new MemoryLevel({ valueEncoding: 'json' });
+    if (!isLocal) {
+        if (process.env.TINA_DISABLE_GIT === 'true') {
+            console.warn('Bypassing LevelDB during Tina Build to prevent Lock Errors. Booting strictly memory-level.');
+            const MemoryLevelClass = (await import('memory-level')).MemoryLevel;
+            databaseAdapter = new MemoryLevelClass({ valueEncoding: 'json' });
+        } else {
+            const dbPath = path.join(process.cwd(), '.tina-db');
+            try {
+                const LevelClass = (await import('level')).Level;
+                databaseAdapter = new LevelClass(dbPath, { valueEncoding: 'json' });
+                databaseAdapter.open().catch((err: any) => console.error('\n\n!!! FATAL LEVELDB OPEN ERROR !!!\nPath:', dbPath, '\nCause:', err));
+            } catch (err) {
+                console.warn('Level runtime rejected inside OpenShift. Bouncing universally to memory-level.');
+                const MemoryLevelClass = (await import('memory-level')).MemoryLevel;
+                databaseAdapter = new MemoryLevelClass({ valueEncoding: 'json' });
+            }
         }
     }
 
-    // ── GitLab provider ───────────────────────────────────────────────────────
-    const gitlabModule = await import('@gitbeaker/rest');
-
-    return createDatabase({
-        tinaDirectory: 'tina',
-        gitProvider: new GitLabProvider(gitlabModule) as any,
-        databaseAdapter,
-        namespace: 'dev',
-        bridge: new FilesystemBridge(process.cwd()),
-    });
+    return isLocal
+        ? dl.createLocalDatabase({ tinaDirectory: 'tina' })
+        : dl.createDatabase({
+            tinaDirectory: 'tina',
+            gitProvider: new GitLabProvider() as any,
+            databaseAdapter: databaseAdapter,
+            namespace: process.env.GITLAB_BRANCH || 'main',
+            // We add the FilesystemBridge so it can read local templates
+            bridge: new dl.FilesystemBridge(process.cwd()),
+        });
 })();
-
-export default databasePromise;

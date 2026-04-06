@@ -1,7 +1,7 @@
 try {
     require('dotenv').config();
 } catch (e) {
-    // 'dotenv' module missing in production container.
+    // 'dotenv' module missing in production container. 
     // This is completely fine since OpenShift injects .env variables natively!
     console.log("No dotenv module found, relying on native OpenShift/Docker environment variables.");
 }
@@ -14,7 +14,7 @@ console.log("==================================================");
 console.log("Environment Variables Loaded Check:");
 console.log("• GITLAB_PROJECT_ID (from .env):", process.env.GITLAB_PROJECT_ID ? "✅ Loaded" : "❌ Missing");
 console.log("• GITLAB_PROJECT_PATH (from .env):", process.env.GITLAB_PROJECT_PATH ? "✅ Loaded (" + process.env.GITLAB_PROJECT_PATH + ")" : "❌ Missing");
-console.log("• GITLAB_HOST (from .env):", process.env.GITLAB_HOST ? process.env.GITLAB_HOST : "Not set (defaulting to gitlab.org)");
+console.log("• GITLAB_HOST (from .env):", process.env.GITLAB_HOST ? process.env.GITLAB_HOST : "Not set (defaulting to gitlab.com)");
 console.log("• TINA_PUBLIC_IS_LOCAL:", process.env.TINA_PUBLIC_IS_LOCAL === 'true' ? "✅ True (Local Mode)" : "❌ False (Gitlab Mode)");
 console.log("==================================================");
 
@@ -26,15 +26,14 @@ const LdapStrategy = require('passport-ldapauth');
 const LocalStrategy = require('passport-local').Strategy;
 const cors = require('cors');
 
+// Import TinaCMS modules compiled or executed dynamically
+const tinaDatabase = require('./tina/database');
+const database = tinaDatabase.default;
+const branchContext = tinaDatabase.branchContext;
+const { resolve } = require('@tinacms/datalayer');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// These are resolved inside startServer() via dynamic import — declared
-// at module scope so the request handler closure can reference them after
-// startServer() has populated them.
-let database;
-let branchContext;
-let tinaResolve;
 
 // Middleware
 app.use(cors());
@@ -89,15 +88,15 @@ passport.use(new LocalStrategy(
     }
 ));
 
+const { Gitlab } = require('@gitbeaker/rest');
+
 // Simple /login route to intercept Docusaurus
 app.get('/login', async (req, res) => {
     let branchesDropdown = '<option value="dev">dev</option>';
     if (process.env.TINA_PUBLIC_IS_LOCAL !== 'true') {
         try {
-            // Dynamic import — @gitbeaker/rest is ESM-only
-            const { Gitlab } = await import('@gitbeaker/rest');
             const api = new Gitlab({
-                host: process.env.GITLAB_HOST || 'https://gitlab.org',
+                host: process.env.GITLAB_HOST || 'https://gitlab.com',
                 token: process.env.GITLAB_PERSONAL_ACCESS_TOKEN || ''
             });
             const projectId = process.env.GITLAB_PROJECT_ID || process.env.GITLAB_PROJECT_PATH || '';
@@ -142,30 +141,39 @@ app.post('/login', async (req, res, next) => {
 
     if (req.body.newBranch && process.env.TINA_PUBLIC_IS_LOCAL !== 'true') {
         try {
-            const { Gitlab } = await import('@gitbeaker/rest');
             const api = new Gitlab({
-                host: process.env.GITLAB_HOST || 'https://gitlab.org',
+                host: process.env.GITLAB_HOST || 'https://gitlab.com',
                 token: process.env.GITLAB_PERSONAL_ACCESS_TOKEN || ''
             });
             const projectId = process.env.GITLAB_PROJECT_ID || process.env.GITLAB_PROJECT_PATH || '';
             try {
                 await api.Branches.show(projectId, chosenBranch);
             } catch (e) {
-                // branch does not exist — create it from dev
-                await api.Branches.create(projectId, chosenBranch, 'dev');
+                // branch does not exist, create it from the base branch, effectively tracking correct lineage
+                await api.Branches.create(projectId, chosenBranch, process.env.GITLAB_BRANCH || 'main');
             }
         } catch (e) {
             console.error("Failed to create branch:", e.message);
         }
     }
 
-    req.session.branch = chosenBranch || 'dev';
+    req.session.branch = chosenBranch || process.env.GITLAB_BRANCH || 'main';
 
     const strategy = req.body.domain === 'ad' ? 'ldapauth' : 'local';
     passport.authenticate(strategy, {
         successRedirect: '/admin',
         failureRedirect: '/login',
     })(req, res, next);
+});
+
+// Explicit Logout Route
+app.get('/logout', (req, res, next) => {
+    req.logout((err) => {
+        if (err) { return next(err); }
+        req.session.destroy(() => {
+            res.redirect('/login');
+        });
+    });
 });
 
 // Protect /admin
@@ -184,11 +192,12 @@ app.use('/api/tina', (req, res, next) => {
     res.status(401).send('Unauthorized');
 });
 
-// --- TinaCMS GraphQL Endpoint ---
+// --- TinaCMS Endpoint Setup ---
 const handler = async (req, res) => {
-    if (!database) {
-        return res.status(503).json({ error: 'Database not yet initialized, please retry shortly.' });
-    }
+    // Tina's SDK sometimes hits:
+    // - /api/tina/graphql
+    // - /api/tina/graphql/<branch>
+    // (see generated `tina/__generated__/types.ts`)
 
     let query;
     let variables;
@@ -222,39 +231,60 @@ const handler = async (req, res) => {
             : undefined;
 
     const activeBranch =
+        req.session?.branch ||
         branchFromParams ||
         branchFromVars ||
-        req.session?.branch ||
         process.env.GITLAB_BRANCH ||
         'main';
 
+    
+    // The physical LevelDB database was fully seeded using the base branch logic.
+    // We MUST force the Graphql Read Cache to pull from the base branch, or it returns 0 docs.
+    const BASE_NAMESPACE = process.env.GITLAB_BRANCH || 'main';
+
+    console.log(`\n----- TINA GRAPHQL DEBUG -----`);
+    console.log(`1. Frontend Requested Branch: ${branchFromVars || branchFromParams || 'None'}`);
+    console.log(`2. UI Login Session Branch:   ${req.session?.branch || 'None'}`);
+    console.log(`3. Force-Routing DB Read To:  ${BASE_NAMESPACE} (Because this is the only branch your pod physically downloaded)`);
+    console.log(`4. Target Git Commit Branch:  ${activeBranch} (Because this is what you chose to edit in the UI)`);
+    console.log(`------------------------------\n`);
+    
+    if (database && database.gitProvider) {
+        database.gitProvider.branch = activeBranch;
+    }
+
     try {
-        const result = await branchContext.run(activeBranch, () =>
-            tinaResolve({
+        const result = await branchContext.run(BASE_NAMESPACE, () =>
+            resolve({
                 config: { useRelativeMedia: true },
                 database,
                 query,
                 variables,
+                // Avoid verbose logs during admin usage (can be large and memory-heavy)
                 verbose: false,
                 ctxUser: req.user,
-            })
+            }),
         );
         res.json(result);
     } catch (e) {
         console.error('GraphQL Error:', e.stack || e);
+        // Tina's admin expects a GraphQL-shaped payload even on failures.
+        // Returning 200 prevents Tina's UI from treating it as a "failed to fetch".
         res.status(200).json({
             data: null,
             errors: [
                 {
                     message: e.message || 'Internal server error',
-                    extensions: { code: 'INTERNAL_SERVER_ERROR' },
+                    extensions: {
+                        code: 'INTERNAL_SERVER_ERROR',
+                    },
                 },
             ],
         });
     }
 };
 
-// Branch-aware route
+// Branch-aware route (used when Tina branch is selected)
 app.post('/api/tina/graphql/:branch', handler);
 app.get('/api/tina/graphql/:branch', handler);
 
@@ -323,9 +353,7 @@ app.get('/api/tina/media/list', async (req, res) => {
         });
 
         const totalCount = items.length;
-        const nextOffset = parseInt(offset) + parseInt(limit) < totalCount
-            ? parseInt(offset) + parseInt(limit)
-            : null;
+        const nextOffset = parseInt(offset) + parseInt(limit) < totalCount ? parseInt(offset) + parseInt(limit) : null;
         items = items.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
 
         res.json({ items, totalCount, nextOffset });
@@ -348,9 +376,14 @@ app.delete('/api/tina/media/delete', async (req, res) => {
 });
 
 // --- Serve Static Folders ---
+// Serve the static directory which contains the newly built tina admin under static/admin
 app.use(express.static(path.join(__dirname, 'static')));
+
+// When running in OpenShift, we assume 'npm run build' ran and populated build/
 app.use(express.static(path.join(__dirname, 'build')));
 
+// Any other route falls back to Docusaurus build or index
+// If requested path starts with /admin, fallback to admin
 app.use('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'static', 'admin', 'index.html'));
 });
@@ -359,26 +392,10 @@ app.use((req, res) => {
     res.sendFile(path.join(__dirname, 'build', 'index.html'));
 });
 
-// --- Server Startup ---
 const startServer = async () => {
     try {
-        // ── 1. Load ESM modules via dynamic import ──────────────────────────
-        // @tinacms/datalayer is pure ESM — require() throws ERR_REQUIRE_ESM.
-        // Dynamic import() works from CommonJS and is the correct bridge.
-        console.log("Loading TinaCMS modules...");
-        const tinaDatabaseModule = await import('./tina/database.js');
-        const datalayer = await import('@tinacms/datalayer');
-
-        branchContext = tinaDatabaseModule.branchContext;
-        tinaResolve = datalayer.resolve;
-
-        // ── 2. Await the database Promise exported by database.ts ───────────
-        database = await tinaDatabaseModule.default;
-        console.log("Database initialized. Methods available:",
-            Object.getOwnPropertyNames(Object.getPrototypeOf(database)).join(', '));
-
-        // ── 3. Index content ────────────────────────────────────────────────
         console.log("Indexing Tina data layer...");
+        const fs = require('fs');
         const generatedFolder = path.join(process.cwd(), 'tina', '__generated__');
 
         const graphQLSchema = JSON.parse(fs.readFileSync(path.join(generatedFolder, '_graphql.json'), 'utf8'));
@@ -389,18 +406,18 @@ const startServer = async () => {
             await database.indexContent({ graphQLSchema, tinaSchema, lookup });
             console.log("Finished indexing.");
         } else {
-            console.log("Skipping indexContent — not available in this runtime mode (pre-built schema will be used).");
+            // In some datalayer modes (notably local DB mode), `indexContent` isn't available.
+            // In that case, Tina should already be indexed via `tina-build` / filesystem reads.
+            console.log("Skipping indexing: database.indexContent is not available in this runtime mode.");
         }
-
-        // ── 4. Start listening ──────────────────────────────────────────────
-        app.listen(PORT, () => {
-            console.log(`Server is running on port ${PORT}`);
-        });
-
     } catch (e) {
-        console.error("Failed to start server:", e.stack || e);
-        process.exit(1);
+        // Don't block server startup on indexing issues in airgap scenarios.
+        console.error("Tina indexing failed (continuing anyway):", e.stack || e);
     }
+
+    app.listen(PORT, () => {
+        console.log(`Server is running on port ${PORT}`);
+    });
 };
 
 startServer();
