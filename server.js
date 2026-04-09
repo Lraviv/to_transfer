@@ -26,11 +26,17 @@ const LdapStrategy = require('passport-ldapauth');
 const LocalStrategy = require('passport-local').Strategy;
 const cors = require('cors');
 
-// Import TinaCMS modules compiled or executed dynamically
-const tinaDatabase = require('./tina/database');
-const database = tinaDatabase.default;
-const branchContext = tinaDatabase.branchContext;
-const { resolve } = require('@tinacms/datalayer');
+// Import TinaCMS modules dynamically via async proxies!
+let tinaDatabaseCache;
+const getDatabase = async () => {
+    if (!tinaDatabaseCache) tinaDatabaseCache = await import('./tina/database.js');
+    return tinaDatabaseCache.default?.default || tinaDatabaseCache.default;
+};
+const getBranchContext = async () => {
+    if (!tinaDatabaseCache) tinaDatabaseCache = await import('./tina/database.js');
+    return tinaDatabaseCache.branchContext || tinaDatabaseCache.default?.branchContext;
+};
+const getDatalayer = async () => await import('@tinacms/datalayer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -149,21 +155,31 @@ app.post('/login', async (req, res, next) => {
             try {
                 await api.Branches.show(projectId, chosenBranch);
             } catch (e) {
-                // branch does not exist, create it from dev
-                await api.Branches.create(projectId, chosenBranch, 'dev');
+                // branch does not exist, create it from the base branch, effectively tracking correct lineage
+                await api.Branches.create(projectId, chosenBranch, process.env.GITLAB_BRANCH || 'main');
             }
         } catch (e) {
             console.error("Failed to create branch:", e.message);
         }
     }
 
-    req.session.branch = chosenBranch || 'dev';
+    req.session.branch = chosenBranch || process.env.GITLAB_BRANCH || 'main';
 
     const strategy = req.body.domain === 'ad' ? 'ldapauth' : 'local';
     passport.authenticate(strategy, {
         successRedirect: '/admin',
         failureRedirect: '/login',
     })(req, res, next);
+});
+
+// Explicit Logout Route
+app.get('/logout', (req, res, next) => {
+    req.logout((err) => {
+        if (err) { return next(err); }
+        req.session.destroy(() => {
+            res.redirect('/login');
+        });
+    });
 });
 
 // Protect /admin
@@ -221,9 +237,9 @@ const handler = async (req, res) => {
             : undefined;
 
     const activeBranch =
+        req.session?.branch ||
         branchFromParams ||
         branchFromVars ||
-        req.session?.branch ||
         process.env.GITLAB_BRANCH ||
         'main';
 
@@ -239,11 +255,21 @@ const handler = async (req, res) => {
     console.log(`4. Target Git Commit Branch:  ${activeBranch} (Because this is what you chose to edit in the UI)`);
     console.log(`------------------------------\n`);
     
+    // Dynamically initialized above using Native ES Modules
+    const db = await getDatabase();
+
+    if (db && db.gitProvider) {
+        db.gitProvider.branch = activeBranch;
+    }
+
     try {
+        const branchContext = await getBranchContext();
+        const { resolve } = await getDatalayer();
+
         const result = await branchContext.run(activeBranch, () =>
             resolve({
                 config: { useRelativeMedia: true },
-                database,
+                database: db,
                 query,
                 variables,
                 // Avoid verbose logs during admin usage (can be large and memory-heavy)
@@ -278,27 +304,6 @@ app.get('/api/tina/graphql/:branch', handler);
 app.post('/api/tina/graphql', handler);
 app.get('/api/tina/graphql', handler);
 
-
-// --- DB Debugging Route ---
-app.get('/debug/db', async (req, res) => {
-    try {
-        if (!globalDatabaseAdapter) {
-            return res.json({ status: "Database not initialized natively yet." });
-        }
-        const keys = [];
-        for await (const key of globalDatabaseAdapter.keys()) {
-            keys.push(key);
-        }
-        res.json({
-            status: "Database Open & Accessible",
-            active_namespace_variable: process.env.GITLAB_BRANCH || 'main',
-            total_documents_indexed: keys.length,
-            first_100_keys: keys.slice(0, 100)
-        });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
 // --- Custom Media Handlers ---
 const multer = require('multer');
 const fs = require('fs');
@@ -409,12 +414,11 @@ const startServer = async () => {
         const tinaSchema = { schema: JSON.parse(fs.readFileSync(path.join(generatedFolder, '_schema.json'), 'utf8')) };
         const lookup = JSON.parse(fs.readFileSync(path.join(generatedFolder, '_lookup.json'), 'utf8'));
 
-        if (typeof database.indexContent === 'function') {
-            await database.indexContent({ graphQLSchema, tinaSchema, lookup });
-            console.log("Finished indexing.");
+        const db = await getDatabase();
+
+        if (typeof db.indexContent === 'function') {
+            await db.indexContent({ graphQLSchema, tinaSchema, lookup });
         } else {
-            // In some datalayer modes (notably local DB mode), `indexContent` isn't available.
-            // In that case, Tina should already be indexed via `tina-build` / filesystem reads.
             console.log("Skipping indexing: database.indexContent is not available in this runtime mode.");
         }
     } catch (e) {
