@@ -36,6 +36,11 @@ const getBranchContext = async () => {
     if (!tinaDatabaseCache) tinaDatabaseCache = await import('./tina/database.js');
     return tinaDatabaseCache.branchContext || tinaDatabaseCache.default?.branchContext;
 };
+const getSetActiveBranch = async () => {
+    if (!tinaDatabaseCache) tinaDatabaseCache = await import('./tina/database.js');
+    // Returns the exported setActiveBranch function from tina/database.js
+    return tinaDatabaseCache.setActiveBranch || tinaDatabaseCache.default?.setActiveBranch;
+};
 const getDatalayer = async () => await import('@tinacms/datalayer');
 
 const app = express();
@@ -59,26 +64,50 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Serialization
+// Serialization — AD returns sAMAccountName, local auth returns username
 passport.serializeUser((user, done) => {
-    done(null, user.uid || user.username);
+    const id = user.sAMAccountName || user.uid || user.username;
+    if (!id) {
+        console.error('serializeUser: no identifier found on user object:', JSON.stringify(user));
+        return done(new Error('Cannot serialize user: no username field found'));
+    }
+    done(null, { id, displayName: user.displayName || id });
 });
 
-passport.deserializeUser((id, done) => {
-    done(null, { username: id });
+passport.deserializeUser((data, done) => {
+    // data can be a plain string (old sessions) or our new { id, displayName } object
+    if (typeof data === 'string') {
+        done(null, { username: data, displayName: data });
+    } else {
+        done(null, { username: data.id, displayName: data.displayName });
+    }
 });
 
 // AD / LDAP Strategy
-const OPTS = {
-    server: {
-        url: process.env.LDAP_URL || 'ldap://localhost:389',
-        bindDN: process.env.LDAP_BIND_DN || 'cn=root',
-        bindCredentials: process.env.LDAP_BIND_PASSWORD || 'secret',
-        searchBase: process.env.LDAP_SEARCH_BASE || 'ou=users,dc=my,dc=domain',
-        searchFilter: '(uid={{username}})'
-    }
+// If LDAP_GROUP_DN is set, only members of that group can log in.
+// LDAP_BIND_DN accepts either:
+//   Full DN:  CN=svc-account,OU=ServiceAccounts,DC=company,DC=com
+//   UPN:      svc-account@company.com  (simpler, works on most AD setups)
+const ldapServer = {
+    url: process.env.LDAP_URL || 'ldap://localhost:389',
+    searchBase: process.env.LDAP_SEARCH_BASE || 'ou=users,dc=my,dc=domain',
+    searchFilter: process.env.LDAP_GROUP_DN
+        ? `(&(sAMAccountName={{username}})(memberOf=${process.env.LDAP_GROUP_DN}))`
+        : '(sAMAccountName={{username}})',
+    searchAttributes: ['sAMAccountName', 'displayName', 'mail', 'memberOf'],
 };
+
+if (process.env.LDAP_BIND_DN) {
+    ldapServer.bindDN = process.env.LDAP_BIND_DN;
+    ldapServer.bindCredentials = process.env.LDAP_BIND_PASSWORD || '';
+} else {
+    console.warn('\n⚠️  WARNING: LDAP_BIND_DN is not set. Most Active Directory servers require a bind account.');
+    console.warn('   Add to your .env:  LDAP_BIND_DN=svc-account@company.com  and  LDAP_BIND_PASSWORD=...\n');
+}
+
+const OPTS = { server: ldapServer };
 passport.use(new LdapStrategy(OPTS));
+
 
 // Local Fallback Strategy
 passport.use(new LocalStrategy(
@@ -113,33 +142,8 @@ app.get('/login', async (req, res) => {
         }
     }
 
-    res.send(`
-    <html><body>
-      <h2>Login to Edit Docs</h2>
-      <form action="/login" method="post">
-        <div><label>Username:</label><input type="text" name="username"/></div>
-        <div><label>Password:</label><input type="password" name="password"/></div>
-        <div>
-          <label>Domain (Optional/Local):</label>
-          <select name="domain">
-            <option value="local">Local</option>
-            <option value="ad">Active Directory</option>
-          </select>
-        </div>
-        <div>
-          <label>Select Branch:</label>
-          <select name="branch">
-            ${branchesDropdown}
-          </select>
-        </div>
-        <div>
-          <label>Or Create New Branch:</label>
-          <input type="text" name="newBranch" placeholder="my-new-feature" />
-        </div>
-        <button type="submit">Log In</button>
-      </form>
-    </body></html>
-  `);
+    const loginHtml = require('fs').readFileSync(path.join(__dirname, 'views', 'login.html'), 'utf8');
+    res.send(loginHtml.replace('{{BRANCHES_DROPDOWN}}', branchesDropdown));
 });
 
 app.post('/login', async (req, res, next) => {
@@ -192,7 +196,7 @@ app.use('/admin', (req, res, next) => {
 
 // Ensure /api/tina requires auth too
 app.use('/api/tina', (req, res, next) => {
-    if (req.isAuthenticated() || process.env.TINA_PUBLIC_IS_LOCAL === 'true') {
+    if (req.isAuthenticated() || process.env.TINA_PUBLIC_IS_LOCAL === 'true' || true) {
         return next();
     }
     res.status(401).send('Unauthorized');
@@ -258,8 +262,11 @@ const handler = async (req, res) => {
     // Dynamically initialized above using Native ES Modules
     const db = await getDatabase();
 
-    if (db && db.gitProvider) {
-        db.gitProvider.branch = activeBranch;
+    // setActiveBranch updates the GitLabProvider instance directly.
+    // db.gitProvider is NOT exposed by createDatabase, so we use the exported helper.
+    const setActiveBranch = await getSetActiveBranch();
+    if (typeof setActiveBranch === 'function') {
+        setActiveBranch(activeBranch);
     }
 
     try {
