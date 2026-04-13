@@ -167,12 +167,31 @@ app.post('/login', async (req, res, next) => {
         }
     }
 
-    req.session.branch = chosenBranch || process.env.GITLAB_BRANCH || 'main';
-
+    // NOTE: req.session.branch must be set AFTER passport.authenticate calls req.logIn(),
+    // because Passport regenerates the session (session fixation protection) which would
+    // wipe out anything written to req.session before authentication completes.
+    const resolvedBranch = chosenBranch || process.env.GITLAB_BRANCH || 'main';
     const strategy = req.body.domain === 'ad' ? 'ldapauth' : 'local';
-    passport.authenticate(strategy, {
-        successRedirect: '/admin',
-        failureRedirect: '/login',
+
+    passport.authenticate(strategy, (err, user, info) => {
+        if (err) return next(err);
+        if (!user) return res.redirect('/login');
+
+        req.logIn(user, (loginErr) => {
+            if (loginErr) return next(loginErr);
+
+            // Set branch on the NEW session created by req.logIn()
+            req.session.branch = resolvedBranch;
+
+            // Also persist as a cookie (survives session resets, e.g. server restarts)
+            res.cookie('tina-branch', resolvedBranch, {
+                httpOnly: true,
+                sameSite: 'lax',
+                maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+            });
+
+            return res.redirect('/admin');
+        });
     })(req, res, next);
 });
 
@@ -242,6 +261,7 @@ const handler = async (req, res) => {
 
     const activeBranch =
         req.session?.branch ||
+        req.cookies?.['tina-branch'] ||
         branchFromParams ||
         branchFromVars ||
         process.env.GITLAB_BRANCH ||
